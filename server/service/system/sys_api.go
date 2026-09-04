@@ -3,6 +3,8 @@ package system
 import (
 	"errors"
 	"fmt"
+	"strings"
+
 	"github.com/flipped-aurora/gin-vue-admin/server/global"
 	"github.com/flipped-aurora/gin-vue-admin/server/model/common/request"
 	"github.com/flipped-aurora/gin-vue-admin/server/model/system"
@@ -27,8 +29,26 @@ func (apiService *ApiService) CreateApi(api system.SysApi) (err error) {
 	return global.GVA_DB.Create(&api).Error
 }
 
-func (apiService *ApiService) GetApiGroups() (groups []string, err error) {
-	err = global.GVA_DB.Model(&system.SysApi{}).Select("DISTINCT api_group").Pluck("api_group", &groups).Error
+func (apiService *ApiService) GetApiGroups() (groups []string, groupApiMap map[string]string, err error) {
+	var apis []system.SysApi
+	err = global.GVA_DB.Find(&apis).Error
+	if err != nil {
+		return
+	}
+	groupApiMap = make(map[string]string, 0)
+	for i := range apis {
+		pathArr := strings.Split(apis[i].Path, "/")
+		newGroup := true
+		for i2 := range groups {
+			if groups[i2] == apis[i].ApiGroup {
+				newGroup = false
+			}
+		}
+		if newGroup {
+			groups = append(groups, apis[i].ApiGroup)
+		}
+		groupApiMap[pathArr[1]] = apis[i].ApiGroup
+	}
 	return
 }
 
@@ -116,7 +136,7 @@ func (apiService *ApiService) IgnoreApi(ignoreApi system.SysIgnoreApi) (err erro
 func (apiService *ApiService) EnterSyncApi(syncApis systemRes.SysSyncApis) (err error) {
 	return global.GVA_DB.Transaction(func(tx *gorm.DB) error {
 		var txErr error
-		if syncApis.NewApis != nil && len(syncApis.NewApis) > 0 {
+		if len(syncApis.NewApis) > 0 {
 			txErr = tx.Create(&syncApis.NewApis).Error
 			if txErr != nil {
 				return txErr
@@ -214,9 +234,26 @@ func (apiService *ApiService) GetAPIInfoList(api system.SysApi, info request.Pag
 //@description: 获取所有的api
 //@return:  apis []model.SysApi, err error
 
-func (apiService *ApiService) GetAllApis() (apis []system.SysApi, err error) {
-	err = global.GVA_DB.Find(&apis).Error
-	return
+func (apiService *ApiService) GetAllApis(authorityID uint) (apis []system.SysApi, err error) {
+	parentAuthorityID, err := AuthorityServiceApp.GetParentAuthorityID(authorityID)
+	if err != nil {
+		return nil, err
+	}
+	err = global.GVA_DB.Order("id desc").Find(&apis).Error
+	if parentAuthorityID == 0 || !global.GVA_CONFIG.System.UseStrictAuth {
+		return
+	}
+	paths := CasbinServiceApp.GetPolicyPathByAuthorityId(authorityID)
+	// 挑选 apis里面的path和method也在paths里面的api
+	var authApis []system.SysApi
+	for i := range apis {
+		for j := range paths {
+			if paths[j].Path == apis[i].Path && paths[j].Method == apis[i].Method {
+				authApis = append(authApis, apis[i])
+			}
+		}
+	}
+	return authApis, err
 }
 
 //@author: [piexlmax](https://github.com/piexlmax)
